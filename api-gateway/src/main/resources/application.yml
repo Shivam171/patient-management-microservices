@@ -1,0 +1,106 @@
+server:
+  port: 4004 # Port for the API Gateway
+
+# jwt: # commenting this out as docker env variables will be used
+#  secret: Wm9vbXlzZWNyZXRrZXlmb3Jqd3R0b2tlbnNnZW5lcmF0aW9uMTIzNDU2Nzg= # Base64 encoded secret
+
+logging:
+  level:
+    org.springframework.cloud.gateway: DEBUG
+    org.springframework.data.redis: DEBUG
+    org.springframework.cloud.gateway.filter.ratelimit: DEBUG
+    reactor.netty: DEBUG
+
+spring:
+  data:
+    redis:
+      url: ${SPRING_DATA_REDIS_URL} # Docker env variable
+  
+  cloud:
+    gateway:
+      globalCors:
+        corsConfigurations:
+          '[/**]':
+            allowedOriginPatterns:
+              - "*" # Allow all origins (using pattern matching)
+              # For specific origins, use these instead:
+              # - "http://localhost:3000"
+              # - "http://localhost:5173"
+            allowedMethods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+              - OPTIONS
+            allowedHeaders: "*"
+            allowCredentials: true
+
+      default-filters:
+        - name: RequestRateLimiter
+          args:
+            redis-rate-limiter.replenishRate: 10 # Default: 10 req/sec
+            redis-rate-limiter.burstCapacity: 20 # Default: 20 req/sec
+            key-resolver: "#{@ipKeyResolver}"    # Default: per-IP limiter
+
+      routes:
+        # Route for /api/auth/** to auth-service
+        - id: auth-service-route
+          uri: http://auth-service:4005
+          predicates:
+            - Path=/auth/**
+          filters:
+            - StripPrefix=1
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 3  # 3 req/sec (More strict)
+                redis-rate-limiter.burstCapacity: 5  # 5 req/sec (More strict)
+                key-resolver: "#{@userKeyResolver}"  # Custom per-user limiter
+            - name: CircuitBreaker
+              args:
+                name: patient-serviceCB
+                fallbackUri: forward:/fallback/auth-service
+
+        # Route for /api/patients/** to patient-service
+        - id: patient-service-route
+          uri: http://patient-service:4000
+          predicates:
+            - Path=/api/patients/**
+          filters:
+            - StripPrefix=1
+            - JwtValidation # Add JWT validation filter
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 5  # 5 req/sec
+                redis-rate-limiter.burstCapacity: 10 # 10 req/sec
+                key-resolver: "#{@userKeyResolver}"  # Custom per-user limiter
+            - name: CircuitBreaker
+              args:
+                name: patient-serviceCB
+                fallbackUri: forward:/fallback/patient-service
+
+        # Route for /api/docs/patients to patient-service /v3/api-docs
+        - id: api-docs-patient-route
+          uri: http://patient-service:4000
+          predicates:
+            - Path=/api-docs/patients
+          filters:
+            - RewritePath=/api-docs/patients,/v3/api-docs
+
+        # Route for /api/docs/auth to auth-service /v3/api-docs
+        - id: api-docs-auth-route
+          uri: http://auth-service:4005
+          predicates:
+            - Path=/api-docs/auth
+          filters:
+            - RewritePath=/api-docs/auth,/v3/api-docs
+
+    loadbalancer:
+      clients:
+        auth-service:
+          instances:
+            - http://auth-service:4005
+            # - http://auth-service:4006 # (Not used in this project) Fallback to this instance if the first one is down
+        patient-service:
+          instances:
+            - http://patient-service:4000
+            # - http://patient-service:4001 # (Not used in this project) Fallback to this instance if the first one is down

@@ -1,0 +1,120 @@
+version: '3.8'
+
+services:
+  patient-service-db:
+    image: postgres:13-alpine3.20
+    container_name: patient-service-db
+    environment:
+      POSTGRES_DB: db # Change this accordingly
+      POSTGRES_USER: admin_user # Change this accordingly
+      POSTGRES_PASSWORD: admin_pass # Change this accordingly
+    ports:
+      - "5432:5432"
+    volumes:
+      - patient_data:/var/lib/postgresql/data
+
+  auth-service-db:
+    image: postgres:13-alpine3.20
+    container_name: auth-service-db
+    environment:
+      POSTGRES_DB: db # Change this accordingly
+      POSTGRES_USER: admin_user # Change this accordingly
+      POSTGRES_PASSWORD: admin_pass # Change this accordingly
+    ports:
+      - "5001:5432"
+    volumes:
+      - auth_data:/var/lib/postgresql/data
+
+  kafka:
+    image: bitnami/kafka:latest
+    container_name: patient-service-kafka
+    ports:
+      - "9092:9092"  # PLAINTEXT Broker listener (inside Docker network)
+      - "9094:9094"  # EXTERNAL listener for localhost access
+    environment:
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 0@kafka:9093
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_CFG_NODE_ID: 0
+      KAFKA_CFG_PROCESS_ROLES: controller,broker
+
+  redis-rate-limiter:
+    image: redis:alpine3.21
+    container_name: redis-rate-limiter
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--requirepass", "admin_pass"]
+
+  patient-service:
+    build:
+      context: /Users/<username>/Developer/spring-projects/patient-management/patient-service # Change this accordingly
+    container_name: patient-service-app
+    # ports:
+    #  - "4000:4000" # Closing it as i am using api gateway below, if required can be opened
+    depends_on:
+      - patient-service-db
+      - billing-service
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://patient-service-db:5432/db
+      SPRING_DATASOURCE_USERNAME: admin_user # Change this accordingly
+      SPRING_DATASOURCE_PASSWORD: admin_pass # Change this accordingly
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      SPRING_SQL_INIT_MODE: always
+      BILLING_SERVICE_ADDRESS: billing-service
+      BILLING_SERVICE_GRPC_PORT: 9001
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+
+  auth-service:
+    build:
+      context: /Users/<username>/Developer/spring-projects/patient-management/auth-service # Change this accordingly
+    container_name: auth-service-app
+    # ports:
+    #   - "4005:4005" # Closing it as i am using api gateway below, if required can be opened
+    depends_on:
+      - auth-service-db
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://auth-service-db:5432/db
+      SPRING_DATASOURCE_USERNAME: admin_user # Change this accordingly
+      SPRING_DATASOURCE_PASSWORD: admin_pass # Change this accordingly
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      SPRING_SQL_INIT_MODE: always
+      JWT_SECRET: Wm9vbXlzZWNyZXRrZXlmb3Jqd3R0b2tlbnNnZW5lcmF0aW9uMTIzNDU2Nzg=  # Base64 encoded string, change this
+
+  billing-service:
+    build:
+      context: /Users/<username>/Developer/spring-projects/patient-management/billing-service # Change this accordingly
+    container_name: billing-service-app
+    ports:
+      - "4001:4001"
+      - "9001:9001"
+
+  analytics-service:
+    build:
+      context: /Users/<username>/Developer/spring-projects/patient-management/analytics-service # Change this accordingly
+    container_name: analytics-service-app
+    ports:
+      - "4002:4002"
+    depends_on:
+      - patient-service
+    environment:
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+
+  api-gateway:
+    build:
+      context: /Users/<username>/Developer/spring-projects/patient-management/api-gateway # Change this accordingly
+    container_name: api-gateway
+    ports:
+      - "4004:4004"
+    depends_on:
+      - redis-rate-limiter
+    environment:
+      AUTH_SERVICE_URL: http://auth-service:4005
+      SPRING_DATA_REDIS_URL: redis://:admin_pass@redis-rate-limiter:6379 # Change this accordingly
+      JWT_SECRET: Wm9vbXlzZWNyZXRrZXlmb3Jqd3R0b2tlbnNnZW5lcmF0aW9uMTIzNDU2Nzg=  # Base64 encoded string, change this
+
+volumes:
+  patient_data:
+  auth_data:
+  # redis_data:  # Optional
